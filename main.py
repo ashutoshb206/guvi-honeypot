@@ -58,7 +58,7 @@ class HoneypotEvent(BaseModel):
     sessionId: str = Field(..., min_length=1)
     message: Message
     conversationHistory: List[ConversationTurn] = Field(default_factory=list)
-    metadata: Metadata
+    metadata: Optional[Metadata] = None
 
 
 class HoneypotResponse(BaseModel):
