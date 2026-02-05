@@ -220,26 +220,28 @@ def schedule_callback(
 
 
 def send_final_result_callback(session_id: str) -> None:
-    state = SESSIONS.get(session_id)
-    if not state:
-        logger.warning("Session %s not found when attempting callback", session_id)
-        return
-
-    payload = {
-        "sessionId": session_id,
-        "scamDetected": state.scam_detected,
-        "totalMessagesExchanged": state.total_messages,
-        "extractedIntelligence": state.intelligence.to_payload(),
-        "agentNotes": state.agent_notes(),
-    }
-
+    state: Optional[SessionState] = None
     try:
+        state = SESSIONS.get(session_id)
+        if not state:
+            logger.warning("Session %s not found when attempting callback", session_id)
+            return
+
+        payload = {
+            "sessionId": session_id,
+            "scamDetected": state.scam_detected,
+            "totalMessagesExchanged": state.total_messages,
+            "extractedIntelligence": state.intelligence.to_payload(),
+            "agentNotes": state.agent_notes(),
+        }
+
         response = httpx.post(CALLBACK_URL, json=payload, timeout=5)
         response.raise_for_status()
         state.callback_sent = True
         logger.info("Final result callback successful for session %s", session_id)
     except Exception as exc:  # pragma: no cover - logging path
-        state.callback_in_progress = False
+        if state:
+            state.callback_in_progress = False
         logger.warning(
             "Callback failed for session %s: %s", session_id, exc
         )
@@ -311,19 +313,24 @@ async def honeypot_endpoint(
     background_tasks: BackgroundTasks,
     _: str = Depends(authorize_request),
 ) -> HoneypotResponse:
-    scam_detected = detect_scam_intent(event.message.text, event.conversationHistory)
+    try:
+        scam_detected = detect_scam_intent(event.message.text, event.conversationHistory)
 
-    messages_for_intel = [turn.text for turn in event.conversationHistory]
-    messages_for_intel.append(event.message.text)
-    intelligence_snapshot = extract_intelligence(messages_for_intel)
+        messages_for_intel = [turn.text for turn in event.conversationHistory]
+        messages_for_intel.append(event.message.text)
+        intelligence_snapshot = extract_intelligence(messages_for_intel)
 
-    state = SESSIONS.setdefault(event.sessionId, SessionState())
-    state.total_messages = len(event.conversationHistory) + 1
-    state.scam_detected = state.scam_detected or scam_detected
-    state.intelligence.merge(intelligence_snapshot)
+        state = SESSIONS.setdefault(event.sessionId, SessionState())
+        state.total_messages = len(event.conversationHistory) + 1
+        state.scam_detected = state.scam_detected or scam_detected
+        state.intelligence.merge(intelligence_snapshot)
 
-    if should_trigger_callback(state):
-        schedule_callback(background_tasks, event.sessionId, state)
+        if should_trigger_callback(state):
+            schedule_callback(background_tasks, event.sessionId, state)
 
-    reply = build_confused_reply(event, scam_detected)
+        reply = build_confused_reply(event, scam_detected)
+    except Exception as exc:  # pragma: no cover - safety net
+        logger.warning("honeypot endpoint fallback due to error: %s", exc)
+        reply = "Sorry, I’m a bit confused. Can you explain again?"
+
     return HoneypotResponse(status="success", reply=reply)
